@@ -23,6 +23,7 @@
 |---|---|---|
 | `PEERBOARD_INTERVAL_SEC` | `300` | 要約の最小間隔 (秒) |
 | `PEERBOARD_AGY_MODEL` | `gemini-3.8-flash-low` | `agy --model` に渡すモデル |
+| `PEERBOARD_STALE_SEC` | `21600` | SessionStart で、更新からこの秒数を超えたセッションを注入対象から外す |
 | `PEERBOARD_HOME` | `~/.claude/board` | ボードの保存先 |
 | `PEERBOARD_CLAUDE_DIR` | `~/.claude` | セッションレジストリを探すディレクトリ |
 | `PEERBOARD_AGY` | `agy` | agy 実行ファイル |

@@ -12,6 +12,7 @@ LOG = BOARD / ".log"
 INTERVAL = int(os.environ.get("PEERBOARD_INTERVAL_SEC", "300"))
 MODEL = os.environ.get("PEERBOARD_AGY_MODEL", "gemini-3.8-flash-low")
 AGY = os.environ.get("PEERBOARD_AGY", "agy")
+STALE = int(os.environ.get("PEERBOARD_STALE_SEC", "21600"))
 MAX_CHARS = 20000
 MAX_SUMMARY = 600
 
@@ -163,14 +164,20 @@ def cmd_stop(hook):
     write_json(LOCKS / f"{sid}.json", {"pid": p.pid, "t": now})
 
 
-def peers(sid, alive, only_unseen):
+def age_str(t):
+    m = int((time.time() - t) / 60)
+    return "たった今" if m < 1 else f"{m}分前" if m < 60 else f"{m // 60}時間前" if m < 2880 else f"{m // 1440}日前"
+
+
+def peers(sid, alive, only_unseen, max_age=None):
     seen = read_json(SEEN / f"{sid}.json", {}) if only_unseen else {}
     out = []
     for s in alive:
         if s == sid:
             continue
         e = read_json(BOARD / f"{s}.json")
-        if e and e.get("summary") and e.get("updatedAt", 0) > seen.get(s, 0):
+        if e and e.get("summary") and e.get("updatedAt", 0) > seen.get(s, 0) \
+                and (max_age is None or time.time() - e["updatedAt"] <= max_age):
             out.append(e)
     return out
 
@@ -181,13 +188,13 @@ def inject(hook, event, only_unseen):
         return
     alive = alive_sessions()
     prune(alive)
-    es = peers(sid, alive, only_unseen)
+    es = peers(sid, alive, only_unseen, None if only_unseen else STALE)
     if not es:
         return
     seen = read_json(SEEN / f"{sid}.json", {})
     seen.update({e["sessionId"]: e["updatedAt"] for e in es})
     write_json(SEEN / f"{sid}.json", seen)
-    body = "\n".join(f"- {e['name']} ({os.path.basename(e.get('cwd', '').rstrip('/'))}): "
+    body = "\n".join(f"- {e['name']} ({os.path.basename(e.get('cwd', '').rstrip('/'))}, {age_str(e['updatedAt'])}): "
                      f"{e['summary'].replace(chr(10), ' / ')}" for e in es)
     ctx = ("[peerboard] 他セッションの最新状況:\n" + body +
            f"\n関連があれば SendMessage({{to: \"{es[0]['name']}\"}}) で詳細を問い合わせること。無関係なら無視。")

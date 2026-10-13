@@ -41,6 +41,14 @@ assert not (pb.BOARD / "gone.json").exists()
 # SessionStart は既読でも全 peer を出す
 assert "peer-1" in hook("start", "me")
 
+# start は PEERBOARD_STALE_SEC 超の entry を省き、各行に経過時間が付く
+reg("old", "old-1", 1); board("old", "old-1", "stale", time.time() - 7 * 3600)
+o = hook("start", "me")
+assert "peer-1, たった今)" in o and "old-1" not in o
+assert (pb.BOARD / "old.json").exists()
+assert "old-1, 7時間前)" in hook("start", "me", {"PEERBOARD_STALE_SEC": "86400"})
+(tmp / "sessions" / "1.json").unlink(); pb.prune(pb.alive_sessions())
+
 # recursion guard
 board("peer", "peer-1", "Z", time.time() + 2)
 assert hook("prompt", "me", {"PEERBOARD_CHILD": "1"}) == ""
