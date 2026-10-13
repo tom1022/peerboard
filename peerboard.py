@@ -248,7 +248,7 @@ def touched_places(path, limit=8):
     """main + subagent transcript 全体から副作用のある tool_use を新しい順・重複なしで返す (LLM 不使用)。
     subagent の編集は main transcript に現れず <sid>/subagents/ 配下にだけ残る。"""
     path = Path(path)
-    files = [path, *sorted((path.with_suffix("") / "subagents").glob("agent-*.jsonl"))]
+    files = [path, *sorted((path.with_suffix("") / "subagents").rglob("agent-*.jsonl"))]
     events = []
     for f in files:
         with open(f, errors="replace") as fh:
