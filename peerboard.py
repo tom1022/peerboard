@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """peerboard: Claude Code セッション間の作業サマリ共有。hooks から呼ばれる。"""
-import json, os, subprocess, sys, tempfile, time, traceback
+import json, os, re, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 
 CLAUDE = Path(os.environ.get("PEERBOARD_CLAUDE_DIR", Path.home() / ".claude"))
@@ -13,18 +13,24 @@ INTERVAL = int(os.environ.get("PEERBOARD_INTERVAL_SEC", "300"))
 MODEL = os.environ.get("PEERBOARD_AGY_MODEL", "gemini-3.8-flash-low")
 AGY = os.environ.get("PEERBOARD_AGY", "agy")
 STALE = int(os.environ.get("PEERBOARD_STALE_SEC", "21600"))
-MAX_CHARS = 20000
+HEAD_CHARS = 4000
+TAIL_CHARS = 16000
 MAX_SUMMARY = 600
 
-PROMPT = """あなたは Claude Code セッションの作業ログ要約器です。以下の会話抜粋から、このセッションの現状を日本語で最大3行、各行60字以内で出力してください。前置き・装飾・コードブロックは禁止。
-1行目: 今やっていること: ...
-2行目: 決定事項: ... (なければ省略)
-3行目: 未解決・他セッションに関係しそうな点: ... (なければ省略)
+PROMPT = """あなたは Claude Code セッションの作業ログ要約器です。別リポジトリで作業中の同僚が読んで、このセッションが何についてのものか理解できる要約を、日本語で3行、各行80字以内で出力してください。前置き・装飾・コードブロックは禁止。
+1行目: 目的: このセッションが何のシステム/機能の何を、なぜやっているか。リポジトリ外の人にも分かる粒度
+2行目: 現状: 今どの段階か。抽象度は1段上げる。commit/PR/ブランチの手順の話は書かない
+3行目: 共有: 他セッションに影響しうる共有リソース・インターフェース・決定 (API、スキーマ、インフラ、配信方式など)。なければ「なし」
 
-前回の要約 (継続性のため参照。古ければ更新):
+書き方:
+- 具体的な機能・コンポーネント名で書く (例: 「サイネージの緊急地震速報配信」)。内部の作業管理用語で書かない。
+- 共有行では識別子 (PR 番号、環境変数/シークレット名、API パス、k8s リソース、namespace) を、何であるかを併記して書くことを推奨する。例: 「infra #391 で地震速報リレーのDeployment追加」「Infisical に EEW_RELAY_TOKEN 追加」。意味の分からない識別子だけの記述は禁止。
+- タスク ID (1.1, FX-2 など) や worktree/ブランチ/コミット操作の話は書かない。
+- 前回の要約の「目的」は、目的が明らかに変わらない限りそのまま維持する。
+
+前回の要約:
 {prev}
 
-会話抜粋:
 {text}
 """
 
@@ -86,8 +92,8 @@ def prune(alive):
 
 
 def transcript_text(path):
-    """user/assistant の text のみ。末尾 MAX_CHARS を返す。"""
-    lines = []
+    """user/assistant の text のみ。冒頭の user 発言 (目的が書かれる) と末尾を分けて返す。"""
+    msgs = []
     with open(path, errors="replace") as f:
         for raw in f:
             try:
@@ -101,8 +107,91 @@ def transcript_text(path):
             if isinstance(c, list):
                 c = "\n".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
             if isinstance(c, str) and c.strip() and not c.lstrip().startswith("<"):
-                lines.append(f"[{t}] {c.strip()}")
-    return "\n".join(lines)[-MAX_CHARS:]
+                msgs.append((t, c.strip()))
+    head, n = [], 0
+    for t, c in msgs:
+        if t == "user" and n < HEAD_CHARS:
+            head.append(f"[user] {c}")
+            n += len(head[-1])
+    tail = "\n".join(f"[{t}] {c}" for t, c in msgs)[-TAIL_CHARS:]
+    if not tail:
+        return ""
+    return f"## セッション冒頭\n{chr(10).join(head)[:HEAD_CHARS]}\n\n## 直近\n{tail}"
+
+
+EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
+
+
+def short_path(fp):
+    """絶対パスを `<repo名>/<repo 内の親dir>` に畳む。git 外は $HOME を ~ にした親dir。"""
+    parent = Path(fp).parent
+    for d in (parent, *parent.parents):
+        if (d / ".git").exists():
+            rel = parent.relative_to(d).as_posix()
+            return d.name if rel == "." else f"{d.name}/{rel}"
+    home = str(Path.home())
+    s = str(parent)
+    return "~" + s[len(home):] if s == home or s.startswith(home + "/") else s
+
+
+MCP_WRITE = ("create", "update", "delete", "write", "push", "merge", "upload", "use_figma", "generate", "send",
+             "share", "trash", "apply", "edit", "set", "add", "remove", "replace", "batch")
+# ponytail: 正規表現ヒューリスティック。任意の curl/API 呼び出しなどは拾えない
+BASH_EFFECT = re.compile(r"\b(terraform apply|tofu apply|kubectl (?:apply|delete|patch|rollout)|helm (?:install|upgrade|uninstall)"
+                         r"|gh pr (?:create|merge)|gh repo create|git push|docker push)\b")
+
+
+def mcp_label(name, inp):
+    _, server, *tool = name.split("__")
+    server = server.removeprefix("plugin_").split("_")[-1] if server.startswith("plugin_") else server
+    tool = "__".join(tool)
+    if not any(w in tool for w in MCP_WRITE):
+        return None
+    for k in ("fileKey", "file_key"):
+        if inp.get(k):
+            return f"{server}:{inp[k]}"
+    if inp.get("owner") and inp.get("repo"):
+        return f"{server}:{inp['owner']}/{inp['repo']}" + (f":{inp['path']}" if inp.get("path") else "")
+    for k in ("path", "file_id", "fileId", "url", "id", "name"):
+        if inp.get(k):
+            return f"{server}:{inp[k]}"
+    return f"{server}:{tool}"
+
+
+def touched_places(path, limit=8):
+    """main + subagent transcript 全体から副作用のある tool_use を新しい順・重複なしで返す (LLM 不使用)。
+    subagent の編集は main transcript に現れず <sid>/subagents/ 配下にだけ残る。"""
+    path = Path(path)
+    files = [path, *sorted((path.with_suffix("") / "subagents").glob("agent-*.jsonl"))]
+    events = []
+    for f in files:
+        with open(f, errors="replace") as fh:
+            for raw in fh:
+                try:
+                    d = json.loads(raw)
+                except ValueError:
+                    continue
+                c = d.get("message", {}).get("content") if d.get("type") == "assistant" else None
+                for b in c if isinstance(c, list) else []:
+                    if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                        continue
+                    name, inp = b.get("name", ""), b.get("input") or {}
+                    label = None
+                    if name in EDIT_TOOLS:
+                        fp = inp.get(EDIT_TOOLS[name])
+                        label = short_path(fp) if isinstance(fp, str) and fp.startswith("/") else None
+                    elif name.startswith("mcp__"):
+                        label = mcp_label(name, inp)
+                    elif name == "Bash" and isinstance(inp.get("command"), str):
+                        m = BASH_EFFECT.search(inp["command"])
+                        label = m and f"cmd:{m.group(1)}@{os.path.basename(d.get('cwd', '').rstrip('/'))}"
+                    if label:
+                        events.append((d.get("timestamp", ""), label))
+    seen = {}
+    for _, label in sorted(events, key=lambda e: e[0]):  # stable: 同時刻は読み順
+        seen.pop(label, None)
+        seen[label] = 1
+    return list(reversed(seen))[:limit]
 
 
 def run_agy(prompt):
@@ -125,7 +214,8 @@ def summarize(sid, transcript, name, cwd):
         summary = run_agy(PROMPT.format(prev=prev, text=text))
         if summary:
             write_json(BOARD / f"{sid}.json", {"sessionId": sid, "name": name, "cwd": cwd,
-                                               "summary": summary, "updatedAt": time.time()})
+                                               "summary": summary, "touched": touched_places(transcript),
+                                               "updatedAt": time.time()})
     finally:
         lock.unlink(missing_ok=True)
 
@@ -195,7 +285,8 @@ def inject(hook, event, only_unseen):
     seen.update({e["sessionId"]: e["updatedAt"] for e in es})
     write_json(SEEN / f"{sid}.json", seen)
     body = "\n".join(f"- {e['name']} ({os.path.basename(e.get('cwd', '').rstrip('/'))}, {age_str(e['updatedAt'])}): "
-                     f"{e['summary'].replace(chr(10), ' / ')}" for e in es)
+                     f"{e['summary'].replace(chr(10), ' / ')}"
+                     + (f" / 触った場所: {', '.join(e['touched'])}" if e.get("touched") else "") for e in es)
     ctx = ("[peerboard] 他セッションの最新状況:\n" + body +
            f"\n関連があれば SendMessage({{to: \"{es[0]['name']}\"}}) で詳細を問い合わせること。無関係なら無視。")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": ctx}}, ensure_ascii=False))
