@@ -156,9 +156,71 @@ def repo_name(d):
     return d.name
 
 
-def bash_effect(cmd, cwd):
+def effective_cwd(cmd, cwd):
     m0 = re.match(r"\s*cd\s+(\S+)\s*(?:&&|;)", cmd)
-    cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(m0.group(1)))) if m0 else cwd
+    return os.path.normpath(os.path.join(cwd, os.path.expanduser(m0.group(1)))) if m0 else cwd
+
+
+def place(fp):
+    if not (isinstance(fp, str) and fp.startswith("/")) or any(fp == n or fp.startswith(n + "/") for n in NOISE):
+        return None
+    return short_path(fp)
+
+
+SEGMENT = re.compile(r"&&|\|\||;|\||\n|\$\(")
+REDIRECT = re.compile(r"(?<![\d&>])>>?\s*([^\s<>|&;()]+)")
+WRAP = re.compile(r"^(?:\w+=\S+\s+)*(?:(?:rtk|timeout\s+\S+)\s+)*")
+
+
+def _simple_unquote(m):
+    inner = m.group(0)[1:-1]
+    return inner if re.fullmatch(r"[^\s<>|;&$`]*", inner) else '""'
+
+
+def bash_writes(cmd, cwd):
+    """Bash のファイル書き込み先 (絶対パス) を返す。
+    ponytail: 正規表現ヒューリスティック。python -c / node / make など、スクリプト内部の書き込みは拾えない。
+    ディレクトリや repo 全体が対象のものは親が目的の場所になるよう `/_` を付けて返す。"""
+    s = QUOTED.sub(_simple_unquote, HEREDOC.sub("", cmd))
+    out = []
+    for seg in SEGMENT.split(s):
+        seg = seg.strip()
+        targets = REDIRECT.findall(seg)
+        toks = WRAP.sub("", seg).split()
+        if toks:
+            c, args = toks[0], toks[1:]
+            if c == "cd" and args and "$" not in args[0] and not args[0].startswith("-"):
+                cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(args[0])))  # 途中の cd も追う
+            if c == "git" and args and args[0] in ("mv", "rm", "apply"):
+                c, args = "git-" + args[0], args[1:]
+            if "-e" in args and c in ("sed", "perl"):
+                i = args.index("-e")
+                args = args[:i] + args[i + 2:]
+                has_script = True
+            else:
+                has_script = False
+            pos = [a for a in args if not a.startswith("-") and not a.startswith(">")]
+            if c == "tee":
+                targets += pos
+            elif c in ("sed", "perl") and any(re.fullmatch(r"-\w*i\w*(\..*)?|--in-place.*", a) for a in args):
+                targets += pos if has_script else pos[1:]
+            elif c in ("cp", "mv", "install", "git-mv") and len(pos) >= 2:
+                targets.append(pos[-1])
+            elif c in ("touch", "rm", "git-rm"):
+                targets += pos
+            elif c == "mkdir":
+                targets += [a + "/_" for a in pos]
+            elif c in ("patch", "git-apply"):
+                targets.append("_")
+        for t in targets:
+            if t.startswith("/dev/") or any(ch in t for ch in "$`{}\"*"):
+                continue
+            out.append(os.path.normpath(os.path.join(cwd, os.path.expanduser(t))))
+    return out
+
+
+def bash_effect(cmd, cwd):
+    cwd = effective_cwd(cmd, cwd)
     m = BASH_EFFECT.search(QUOTED.sub('""', HEREDOC.sub("", cmd)))
     return m and f"cmd:{m.group(1)}@{repo_name(cwd)}"
 
@@ -202,12 +264,13 @@ def touched_places(path, limit=8):
                     name, inp = b.get("name", ""), b.get("input") or {}
                     label = None
                     if name in EDIT_TOOLS:
-                        fp = inp.get(EDIT_TOOLS[name])
-                        label = short_path(fp) if isinstance(fp, str) and fp.startswith("/") \
-                            and not any(fp == n or fp.startswith(n + "/") for n in NOISE) else None
+                        label = place(inp.get(EDIT_TOOLS[name]))
                     elif name.startswith("mcp__"):
                         label = mcp_label(name, inp)
                     elif name == "Bash" and isinstance(inp.get("command"), str):
+                        for fp in bash_writes(inp["command"], d.get("cwd", "")):
+                            if place(fp):
+                                events.append((d.get("timestamp", ""), place(fp)))
                         label = bash_effect(inp["command"], d.get("cwd", ""))
                     if label:
                         events.append((d.get("timestamp", ""), label))

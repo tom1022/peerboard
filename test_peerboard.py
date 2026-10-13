@@ -139,6 +139,35 @@ for c in ['echo "terraform apply"', "grep -n 'kubectl apply' x", "cat <<'EOF'\ng
 assert bx("cd infra && terraform apply -auto-approve") == ["cmd:terraform apply@repo"]
 assert bx("rtk git push", cwd=repo / "infra") == ["cmd:git push@repo"]
 assert bx("cd ../elsewhere; echo 1 | kubectl delete pod x", cwd=home) == ["cmd:kubectl delete@elsewhere"]
+# Bash ファイル書き込み: 各形式 + 否定ケース。repo 直下は <repo> に畳む
+def bw(cmd, cwd=None):
+    return bx(cmd, cwd)
+(repo / "src").mkdir(exist_ok=True)
+cases = {
+    "cat > src/a.py <<'EOF'\nx > y\nEOF": ["repo/src"],
+    "echo hi >> top.txt": ["repo"],
+    "echo hi | tee -a src/t.log": ["repo/src"],
+    "sed -i 's/a/b/' src/s.py": ["repo/src"],
+    "sed -i -e 's/a/b/' src/s.py f.py": ["repo/src", "repo"],
+    "perl -pi -e 's/a/b/' src/p.py": ["repo/src"],
+    "cp a.py b.py src/c.py": ["repo/src"],
+    "mv old.py src/new.py": ["repo/src"],
+    "install -m 755 x src/y": ["repo/src"],
+    "touch src/z": ["repo/src"],
+    "mkdir -p src/deep/er": ["repo/src/deep/er"],
+    "rm -rf src/gone.py": ["repo/src"],
+    "git mv a.py src/b.py": ["repo/src"],
+    "git rm src/q.py": ["repo/src"],
+    "patch -p1 < x.diff": ["repo"],
+    "git apply x.diff": ["repo"],
+    "cd src && echo 1 > rel.txt": ["repo/src"],
+    "git status\ncd src\ntouch q": ["repo/src"],
+    "cmd 2>&1": [], "cmd > /dev/null": [], "grep x file > /dev/null": [], "cmd 2> /dev/null": [],
+    'echo "a > b"': [], "cat src/a.py": [], "cmd >&2": [],
+}
+for c, want in cases.items():
+    assert sorted(bw(c)) == sorted(want), (c, bw(c))
+
 # ノイズ除外: ~/.claude 配下、MCP のブラウザ操作・読み取り系
 mt.write_text("\n".join(json.dumps(x) for x in [
     ev("2026-01-01T00:00:01Z", use("Edit", file_path=str(home / ".claude/memory/m.md"))),
