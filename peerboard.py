@@ -137,14 +137,38 @@ def short_path(fp):
 MCP_WRITE = ("create", "update", "delete", "write", "push", "merge", "upload", "use_figma", "generate", "send",
              "share", "trash", "apply", "edit", "set", "add", "remove", "replace", "batch")
 # ponytail: 正規表現ヒューリスティック。任意の curl/API 呼び出しなどは拾えない
-BASH_EFFECT = re.compile(r"\b(terraform apply|tofu apply|kubectl (?:apply|delete|patch|rollout)|helm (?:install|upgrade|uninstall)"
-                         r"|gh pr (?:create|merge)|gh repo create|git push|docker push)\b")
+VERB = (r"(terraform apply|tofu apply|kubectl (?:apply|delete|patch|rollout)|helm (?:install|upgrade|uninstall)"
+        r"|gh pr (?:create|merge)|gh repo create|git push|docker push)\b")
+BASH_EFFECT = re.compile(r"(?:^|&&|\|\||;|\||\n|\$\()\s*(?:\w+=\S+\s+)*(?:(?:rtk|timeout\s+\S+)\s+)*" + VERB)
+HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1(?=\n|$)", re.S)
+QUOTED = re.compile(r"\"[^\"]*\"|'[^']*'")
+# 共有リソースではないパス (スクラッチパッド、memory/plans)
+NOISE = [str(Path.home() / ".claude"), str(CLAUDE), tempfile.gettempdir(), "/tmp"]
+MCP_SKIP_SERVER = ("claude-in-chrome", "computer-use", "claude_browser", "remote-devices")
+MCP_SKIP_TOOL = ("tabs_", "navigate", "screenshot", "read", "get", "list", "search", "query", "fetch")
+
+
+def repo_name(d):
+    d = Path(d)
+    for x in (d, *d.parents):
+        if (x / ".git").exists():
+            return x.name
+    return d.name
+
+
+def bash_effect(cmd, cwd):
+    m0 = re.match(r"\s*cd\s+(\S+)\s*(?:&&|;)", cmd)
+    cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(m0.group(1)))) if m0 else cwd
+    m = BASH_EFFECT.search(QUOTED.sub('""', HEREDOC.sub("", cmd)))
+    return m and f"cmd:{m.group(1)}@{repo_name(cwd)}"
 
 
 def mcp_label(name, inp):
     _, server, *tool = name.split("__")
     server = server.removeprefix("plugin_").split("_")[-1] if server.startswith("plugin_") else server
     tool = "__".join(tool)
+    if any(s in name.lower() for s in MCP_SKIP_SERVER) or any(w in tool for w in MCP_SKIP_TOOL):
+        return None
     if not any(w in tool for w in MCP_WRITE):
         return None
     for k in ("fileKey", "file_key"):
@@ -179,12 +203,12 @@ def touched_places(path, limit=8):
                     label = None
                     if name in EDIT_TOOLS:
                         fp = inp.get(EDIT_TOOLS[name])
-                        label = short_path(fp) if isinstance(fp, str) and fp.startswith("/") else None
+                        label = short_path(fp) if isinstance(fp, str) and fp.startswith("/") \
+                            and not any(fp == n or fp.startswith(n + "/") for n in NOISE) else None
                     elif name.startswith("mcp__"):
                         label = mcp_label(name, inp)
                     elif name == "Bash" and isinstance(inp.get("command"), str):
-                        m = BASH_EFFECT.search(inp["command"])
-                        label = m and f"cmd:{m.group(1)}@{os.path.basename(d.get('cwd', '').rstrip('/'))}"
+                        label = bash_effect(inp["command"], d.get("cwd", ""))
                     if label:
                         events.append((d.get("timestamp", ""), label))
     seen = {}

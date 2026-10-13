@@ -93,6 +93,7 @@ pb.TAIL_CHARS = 16000
 repo = tmp / "repo"; (repo / ".git").mkdir(parents=True)
 home = tmp / "home"; (home / "x").mkdir(parents=True)
 pb.Path.home = staticmethod(lambda: home)
+pb.NOISE = [str(home / ".claude")]
 def tu(name, **inp):
     return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": inp}]}}
 tr.write_text("\n".join(json.dumps(x) for x in [
@@ -126,6 +127,27 @@ mt.write_text("\n".join(json.dumps(x) for x in [
 (sid_dir / "subagents" / "agent-1.jsonl").write_text(json.dumps(
     ev("2026-01-01T00:00:02Z", use("Write", file_path=str(repo / "sub/g.py")))))
 assert pb.touched_places(mt) == ["cmd:kubectl apply@repo", "github:o/r:README.md", "figma:AbC123", "repo/sub", "repo/m"]
+mt.write_text(mt.read_text() + "\n" + "\n".join(json.dumps(ev(f"2026-01-02T00:00:0{i}Z", use("Edit", file_path=str(repo / f"d{i}/x")))) for i in range(9)))
+# Bash はコマンド位置のみ。引用符・heredoc 内は無視。cd 先の repo 名を使う
+(repo / "infra").mkdir()
+mt = tmp / "solo.jsonl"
+def bx(cmd, cwd=None):
+    mt.write_text(json.dumps(ev("2026-01-01T00:00:01Z", use("Bash", command=cmd), cwd=str(cwd or repo))))
+    return pb.touched_places(mt)
+for c in ['echo "terraform apply"', "grep -n 'kubectl apply' x", "cat <<'EOF'\ngit push\nEOF", "ls # git push"]:
+    assert bx(c) == [], c
+assert bx("cd infra && terraform apply -auto-approve") == ["cmd:terraform apply@repo"]
+assert bx("rtk git push", cwd=repo / "infra") == ["cmd:git push@repo"]
+assert bx("cd ../elsewhere; echo 1 | kubectl delete pod x", cwd=home) == ["cmd:kubectl delete@elsewhere"]
+# ノイズ除外: ~/.claude 配下、MCP のブラウザ操作・読み取り系
+mt.write_text("\n".join(json.dumps(x) for x in [
+    ev("2026-01-01T00:00:01Z", use("Edit", file_path=str(home / ".claude/memory/m.md"))),
+    ev("2026-01-01T00:00:02Z", use("mcp__claude-in-chrome__tabs_create_mcp")),
+    ev("2026-01-01T00:00:03Z", use("mcp__github__list_issues", owner="o", repo="r")),
+    ev("2026-01-01T00:00:04Z", use("mcp__github__create_branch", owner="o", repo="r")),
+]))
+assert pb.touched_places(mt) == ["github:o/r"]
+mt.write_text(json.dumps(ev("2026-01-01T00:00:01Z", use("Edit", file_path=str(repo / "m/f.py")))))
 mt.write_text(mt.read_text() + "\n" + "\n".join(json.dumps(ev(f"2026-01-02T00:00:0{i}Z", use("Edit", file_path=str(repo / f"d{i}/x")))) for i in range(9)))
 assert len(pb.touched_places(mt)) == 8 and pb.touched_places(mt)[0] == "repo/d8"
 
