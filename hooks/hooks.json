@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "Stop": [{"hooks": [{"type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/peerboard.py stop", "timeout": 5}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/peerboard.py prompt", "timeout": 5}]}],
+    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/peerboard.py start", "timeout": 5}]}]
+  }
+}

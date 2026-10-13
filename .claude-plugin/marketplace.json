@@ -1,0 +1,7 @@
+{
+  "name": "peerboard-local",
+  "owner": {"name": "tom1022"},
+  "plugins": [
+    {"name": "peerboard", "source": "./", "description": "セッション間の作業状況共有"}
+  ]
+}
