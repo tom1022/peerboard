@@ -109,6 +109,22 @@ tr.write_text("\n".join(json.dumps(x) for x in [
 assert pb.touched_places(tr) == ["repo/d/e", "~/x", "repo", "repo/a/b", "repo/nb", "repo/c"]
 assert pb.touched_places(tr, 2) == ["repo/d/e", "~/x"]
 
+# worktree (.git がファイル)・削除済み worktree の文字列判定・ノイズ除外
+wt = repo / ".claude/worktrees/x"; (wt / "sub").mkdir(parents=True)
+(wt / ".git").write_text(f"gitdir: {repo}/.git/worktrees/x\n")
+main = tmp / "main"; (main / ".git/worktrees/y").mkdir(parents=True)
+ext = tmp / "y"; (ext / "sub").mkdir(parents=True); (ext / ".git").write_text(f"gitdir: {main}/.git/worktrees/y\n")
+orphan = tmp / "orph"; (orphan / "sub").mkdir(parents=True); (orphan / ".git").write_text("gitdir: /nonexistent/zzz\n")
+assert pb.short_path(str(wt / "sub/f")) == "repo[x]/sub"
+assert pb.short_path(str(ext / "sub/f")) == "main[y]/sub"
+assert pb.short_path(str(orphan / "sub/f")) == "orph/sub"
+assert pb.repo_name(wt / "sub") == "repo[x]"
+assert pb.short_path(str(repo / ".claude/worktrees/gone/a/b/f")) == "repo[gone]/a/b"
+assert pb.short_path(str(repo / ".worktrees/gone/f")) == "repo[gone]"
+assert pb.short_path(str(repo / "nope/deeper/f")) == "repo/nope/deeper"
+for n in (".playwright-mcp", "node_modules", ".next", "dist", "__pycache__", ".venv", ".turbo", ".cache"):
+    assert pb.place(str(repo / "a" / n / "f")) is None, n
+
 # subagent 編集のマージ (timestamp 順)・MCP 書き込み・Bash 副作用・上限8
 def ev(ts, blk, cwd=""):
     return {"type": "assistant", "timestamp": ts, "cwd": cwd, "message": {"content": [blk]}}

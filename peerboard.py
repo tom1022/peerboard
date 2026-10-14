@@ -122,13 +122,39 @@ def transcript_text(path):
 EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
 
 
+WORKTREE_PATH = re.compile(r"^(/.*?)/(?:\.claude/worktrees|\.worktrees|worktrees)/([^/]+)(?:/(.*))?$")
+NOISE_PARTS = (".playwright-mcp", ".cache", "node_modules", ".next", "dist", "__pycache__", ".venv", ".turbo")
+
+
+def repo_label(d):
+    """d から上って最寄りの git ルートを探し (名前, ルート) を返す。worktree は `.git` がファイルなので
+    gitdir から本体 repo 名を引き `本体[worktree名]` にする。"""
+    for x in (d, *d.parents):
+        g = x / ".git"
+        if g.is_dir():
+            return x.name, x
+        if g.is_file():
+            try:
+                gd = Path(g.read_text().split("gitdir:", 1)[1].strip())
+            except (OSError, IndexError):
+                return x.name, x
+            ok = gd.parent.name == "worktrees" and gd.parent.parent.name == ".git"
+            return (f"{gd.parent.parent.parent.name}[{x.name}]" if ok else x.name), x
+    return None, None
+
+
 def short_path(fp):
     """絶対パスを `<repo名>/<repo 内の親dir>` に畳む。git 外は $HOME を ~ にした親dir。"""
     parent = Path(fp).parent
-    for d in (parent, *parent.parents):
-        if (d / ".git").exists():
-            rel = parent.relative_to(d).as_posix()
-            return d.name if rel == "." else f"{d.name}/{rel}"
+    # worktree は削除済みのことが多く FS を見られないため、存在しないときは文字列で判定する
+    m = not parent.exists() and WORKTREE_PATH.match(str(parent))
+    if m:
+        name, rel = f"{Path(m[1]).name}[{m[2]}]", m[3] or "."
+    else:
+        name, root = repo_label(parent)
+        rel = parent.relative_to(root).as_posix() if root else None
+    if name:
+        return name if rel == "." else f"{name}/{rel}"
     home = str(Path.home())
     s = str(parent)
     return "~" + s[len(home):] if s == home or s.startswith(home + "/") else s
@@ -150,10 +176,7 @@ MCP_SKIP_TOOL = ("tabs_", "navigate", "screenshot", "read", "get", "list", "sear
 
 def repo_name(d):
     d = Path(d)
-    for x in (d, *d.parents):
-        if (x / ".git").exists():
-            return x.name
-    return d.name
+    return repo_label(d)[0] or d.name
 
 
 def effective_cwd(cmd, cwd):
@@ -162,7 +185,8 @@ def effective_cwd(cmd, cwd):
 
 
 def place(fp):
-    if not (isinstance(fp, str) and fp.startswith("/")) or any(fp == n or fp.startswith(n + "/") for n in NOISE):
+    if not (isinstance(fp, str) and fp.startswith("/")) or any(fp == n or fp.startswith(n + "/") for n in NOISE) \
+            or any(c.startswith(NOISE_PARTS) for c in Path(fp).parts):
         return None
     return short_path(fp)
 

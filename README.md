@@ -28,4 +28,6 @@
 | `PEERBOARD_CLAUDE_DIR` | `~/.claude` | セッションレジストリを探すディレクトリ |
 | `PEERBOARD_AGY` | `agy` | agy 実行ファイル |
 
+バージョン (`.claude-plugin/plugin.json`) は変更のたびに上げる。インストール済みキャッシュはバージョンをキーにするため、上げないと更新が届かない。
+
 エラーはフックの出力ではなく `~/.claude/board/.log` に記録される。
