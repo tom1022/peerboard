@@ -1,6 +1,6 @@
 {
   "name": "peerboard",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "同一マシン上の Claude Code セッション同士が「今やっていること」を自動共有する",
   "author": {"name": "tom1022"}
 }

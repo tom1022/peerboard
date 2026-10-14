@@ -186,7 +186,7 @@ def effective_cwd(cmd, cwd):
 
 def place(fp):
     if not (isinstance(fp, str) and fp.startswith("/")) or any(fp == n or fp.startswith(n + "/") for n in NOISE) \
-            or any(c.startswith(NOISE_PARTS) for c in Path(fp).parts):
+            or any(c in NOISE_PARTS or c.startswith(".playwright-mcp") for c in Path(fp).parts):
         return None
     return short_path(fp)
 
